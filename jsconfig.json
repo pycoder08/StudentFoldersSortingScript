@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "checkJs": true,
+    "target": "ES5"
+  },
+  "include": [
+    "**/*.js",
+    "**/*.gs"
+  ]
+}
