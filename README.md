@@ -11,6 +11,22 @@ This script uses Google Appscript to take a spreadsheet of students as well as a
 -   Student folder exists but isn't listed
 -   Student folder does not exist
 
+### Scoring system
+The script matches students to their folders based on their IDs and names. However, not all students have their IDs listed, or the IDs won't match the ID in the folder. In addition, some students have complex names containing dashed compound names, middle initials, suffixes, etc. To overcome these issues, the script employes a scoring system to dynamically compare student data and folder names to find a match.
+
+Each student is assigned a 'main' first name and a 'main' last name. For example, John Smith-Doe Jr. would have the main first name "John" and main last name "Doe." This is determined by picking the very first item in the first name and the second-to-last item in the last name.
+
+Everything that isn't a main first or last name is designated as an 'extra' piece of the name.
+
+The script then compares the student to each folder name, scoring as follows (where 15 points are needed for a match):
+- If the folder contains the student's ID, add 10 points (almost guarenteed match)
+- If it contains the student's first name, add 8 points
+- If it contains the student's last name, add 6 points
+- If it contains any 'extra' piece of the name, add 1 point
+- If only one folder is a possible match at all, add 1 point for uniqueness
+
+This ensures that if a student is missing their ID, a match can still be made so long as there aren't two folders that share the same student name.
+
 ## Requirements
 - A Google Sheet formatted as follows:
 -   Row 1 - header
