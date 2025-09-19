@@ -40,11 +40,32 @@ function sortStudents() {
     // Get all values in the range
     const values = studentsToSearchSheet.getRange(startRow, startCol, numRows, numCols).getValues();
 
+    // Extract all folders at once to avoid repeated calls to DriveApp, and create index
+    const allStudentFolders = [];
+    const letterFolders = parentFolder.getFolders();
+    while (letterFolders.hasNext()) {
+        const letterFolder = letterFolders.next();
+        const studentSubfolders = letterFolder.getFolders();
+        while (studentSubfolders.hasNext()) {
+            const subfolder = studentSubfolders.next();
+            // Store all the info you need in an object
+            allStudentFolders.push({
+                id: subfolder.getId(),
+                name: subfolder.getName()
+            });
+        }
+    }
+
     // Map letters to their folder IDs
     const parentFolder = DriveApp.getFolderById("1gwv4_UYxNld1rTwkdqdcYq-C4QnDkqbJ");
-    const folderLetterMap = createFolderLetterMap(parentFolder);
+    const folderLetterMap = createFolderLetterMap(allStudentFolders);
 
     Logger.log("Folder map created: " + JSON.stringify(folderLetterMap));
+
+
+
+    Logger.log("Built index of " + allStudentFolders.length + " total student folders.");
+
 
     // Iterate through each row of data
     for (const row of values) {
@@ -77,17 +98,15 @@ function sortStudents() {
 
 /**
  * Creates a map of letter folders to their corresponding folder IDs.
- * @param parentFolder {Folder} The parent folder containing letter folders.
+ * @param folders {array} The array of folder objects to process.
  * @returns {{}} A map where keys are letters and values are folder IDs.
  */
-function createFolderLetterMap(parentFolder) {
-    const folders = parentFolder.getFolders();
+function createFolderLetterMap(folders) {
 
     // Create a map of folder names to folder objects for quick lookup
     const folderMap = {};
     const regex = /^[A-Z](-[A-Z]){0,2}$/; // Tests for letter folders
-    while (folders.hasNext()) {
-        const folder = folders.next();
+    for (const folder of folders) {
         const folderName = folder.getName().trim();
 
         // If the folder name  is in the pattern of A, A-B, or A-B-C
@@ -174,31 +193,11 @@ function searchWithinLetterFolder(folder, studentId, firstName, lastName) {
         const subfolder = subfolders.next();
         const folderName = subfolder.getName().trim();
 
-        // Clean texts for comparison
-        const cleanedFolderName = cleanText(folderName);
-        const cleanedFirstName = removeMiddleInitials(firstName, lastName).firstName
-        const cleanedLastName = removeMiddleInitials(firstName, lastName).lastName;
-        const cleanedStudentId = cleanText(studentId);
-
-        // Check if the folder name contains the student ID
-        if (cleanedFolderName.includes(cleanedStudentId)) {
-            return subfolder.getId();
-        }
-
-
-        // If the student's last name contains a dash, we do 2 searches with full last name and only the first part
-        const lastNameParts = lastName.split("-");
-        if (lastNameParts.length > 1) {
-            const shortLastName = lastNameParts[0].trim();
-            if (cleanedFolderName.includes(cleanedFirstName) && cleanedFolderName.includes(cleanText(shortLastName))) {
-                return subfolder.getId();
-            }
-        }
-
-        if (cleanedFolderName.includes(cleanedFirstName) && cleanedFolderName.includes(cleanedLastName)) {
-            return subfolder.getId();
+        if (detectStudentFolderMatch(firstName, lastName, studentId, folderName)) {
+            return subfolder.getId(); // Return the ID of the matching folder
         }
     }
+    return undefined; // No matching folder found
 }
 
 
@@ -226,29 +225,106 @@ function writeStudentToSheet(sheet, student, hasFolder) {
 }
 
 /**
- * Cleans text by removing diacritics and converting to lowercase.
+ * Cleans text by removing diacritics and non-alphanumeric characters (except spaces and dashes) and converting to lowercase.
  * @param text {string} The text to clean.
  * @returns {string} The cleaned text.
  */
 function cleanText(text) {
-    return text.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+    return text.normalize('NFD').replace(/\p{Diacritic}/gu, '').replace(/[^a-zA-Z0-9 -]/g, '').toLowerCase();
 }
 
+
 /**
- * Removes middle initials from first and last names.
- * @param firstName
- * @param lastName
- * @returns {{firstName: string, lastName: string}}
+ * Detects if a student's folder name matches their name and ID using confidence scoring
+ * @param studentFirstName first name of the student
+ * @param studentLastName last name of the student
+ * @param studentId ID of the student
+ * @param folderName name of the folder to check
+ * @returns {boolean} true if the folder name matches the student, false otherwise
  */
-function removeMiddleInitials(firstName, lastName) {
-    // Remove middle initials from first name
-    let cleanedFirstName = firstName.replace(/\s+[A-Z]\.?(\s+|$)/g, ' ').trim();
+function detectStudentFolderMatch(studentFirstName, studentLastName, studentId, folderName) {
 
-    // Remove middle initials from last name
-    let cleanedLastName = lastName.replace(/\s+[A-Z]\.?(\s+|$)/g, ' ').trim();
+    // Step 1 - prepare student data //
 
-    return {
-        firstName: cleanedFirstName,
-        lastName: cleanedLastName
-    };
+    // Clean texts for comparison
+    const cleanedFirstName = cleanText(studentFirstName);
+    const cleanedLastName = cleanText(studentLastName);
+
+
+    // Divide name and folder name into parts by spaces and dashes
+    const firstNameParts = cleanedFirstName.split(/[\s-]+/);
+    const lastNameParts = cleanedLastName.split(/[\s-]+/);
+
+
+    // Define primary name parts by their position.
+    const primaryFirstName = firstNameParts[0] || '';
+    const primaryLastName = lastNameParts.length > 0 ? lastNameParts[lastNameParts.length - 1] : '';
+
+    // Collect all other name parts as extra parts.
+    const extraNameParts = [
+        ...firstNameParts.slice(1), // All but the first part of the first name
+        ...lastNameParts.slice(0, -1) // All but the last part of the last name
+    ].filter(p => p); // Ensure no blank parts are included.
+
+
+    // Sometimes students have 2 ids separated by a slash, so we need to get both of them
+    let studentIds = [];
+    if (studentId && studentId.trim() !== '') {
+        studentIds = studentId.split("/")
+            .map(id => id.trim().replace(/^0+/, '')); // Remove leading zeros and trim whitespace;
+    }
+
+
+    // Step 2 - prepare folder data //
+    const cleanedFolderName = cleanText(folderName);
+    const folderNameParts = cleanedFolderName.split(/[\s-]+/);
+
+
+    // step 3 - scoring //
+
+    let score = 0;
+
+    // Add 10 points if the ID matches
+    if (studentIds.length > 0) {
+        for (const id of studentIds) {
+            if (folderNameParts.includes(id)) {
+                score += 10;
+                break; // Only add points once even if multiple IDs match
+            }
+        }
+    }
+
+    // Primary name score
+    if (primaryFirstName && folderNameParts.includes(primaryFirstName)) {
+        score += 8;
+    }
+    if (primaryLastName && folderNameParts.includes(primaryLastName)) {
+        score += 6;
+    }
+
+    // +1 point for every extra name part that matches
+    for (const part of extraNameParts) {
+        if (folderNameParts.includes(part)) {
+            score += 1;
+        }
+    }
+
+    Logger.log("Cleaned First Name: " + cleanedFirstName);
+    Logger.log("Cleaned Last Name: " + cleanedLastName);
+    Logger.log("Cleaned Folder Name: " + cleanText(folderName));
+
+    Logger.log("Main first name: " + primaryFirstName);
+    Logger.log("Main last name: " + primaryLastName);
+    Logger.log("Extra name parts: " + JSON.stringify(extraNameParts));
+    Logger.log("Student IDs: " + JSON.stringify(studentIds));
+    Logger.log("Score: " + score);
+
+    // Determine if the score meets the threshold for a match
+    const threshold = 14;
+    return score >= threshold;
+}
+
+function testDetectStudentFolderMatch() {
+    const isMatch = detectStudentFolderMatch("John A.", "Doe-Smith", "01234/56789", "John Doe 1234");
+    Logger.log("Match result: " + isMatch); // Expected output: true
 }
