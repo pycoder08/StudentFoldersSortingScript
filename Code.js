@@ -7,7 +7,17 @@
  *
  */
 
-
+// Column indices (0-based)
+const firstNameColIndex = 0; // Column A
+const lastNameColIndex = 1;  // Column B
+const stateColIndex = 2; // Column C
+const prisonIdColIndex = 3; // Column D
+const inactiveColIndex = 4; // Column E
+const folderColIndex = 5; // Column F
+const releasedColIndex = 6; // Column G
+const contactIdColIndex = 7// Column H
+const createdDateColIndex = 8; // Column I
+const lastModifiedColIndex = 9; // Column J
 
 /*------------------------------------------------------------------
   Main Function - Sort Students
@@ -23,24 +33,13 @@ function sortStudents() {
     const numRows = studentsToSearchSheet.getLastRow() - startRow + 1;
     const numCols = studentsToSearchSheet.getLastColumn() - startCol + 1;
 
-    // Column indices (0-based)
-    const firstNameColIndex = 0; // Column A
-    const lastNameColIndex = 1;  // Column B
-    const stateColIndex = 2; // Column C
-    const prisonIdColIndex = 3; // Column D
-    const inactiveColIndex = 4; // Column E
-    const folderColIndex = 5; // Column F
-    const releasedColIndex = 6; // Column G
-    const contactIdColIndex = 7; // Column H
-    const createdDateColIndex = 8; // Column I
-    const lastModifiedColIndex = 9; // Column J
-
 
 
     // Get all values in the range
     const values = studentsToSearchSheet.getRange(startRow, startCol, numRows, numCols).getValues();
 
     // Extract all folders at once to avoid repeated calls to DriveApp, and create index
+    const parentFolder = DriveApp.getFolderById("1gwv4_UYxNld1rTwkdqdcYq-C4QnDkqbJ");
     const allStudentFolders = [];
     const letterFolders = parentFolder.getFolders();
     while (letterFolders.hasNext()) {
@@ -55,79 +54,56 @@ function sortStudents() {
             });
         }
     }
-
-    // Map letters to their folder IDs
-    const parentFolder = DriveApp.getFolderById("1gwv4_UYxNld1rTwkdqdcYq-C4QnDkqbJ");
-    const folderLetterMap = createFolderLetterMap(allStudentFolders);
-
-    Logger.log("Folder map created: " + JSON.stringify(folderLetterMap));
-
-
-
     Logger.log("Built index of " + allStudentFolders.length + " total student folders.");
 
 
     // Iterate through each row of data
+
+    let rowsForFoundSheet = [];
+    let rowsForNotFoundSheet = [];
     for (const row of values) {
         const student = createStudentObject(row);
         Logger.log("Processing student: " + JSON.stringify(student));
 
-        // Skip if the student already has a folder or is inactive
-        if (student.folder ) {
+        // Skip if the student already has a folder
+        if (student.folder) {
             Logger.log("Skipping student (has folder): " + student.firstName + " " + student.lastName);
+            continue;
         }
-        else {
-            const studentFolder = searchStudentFolders(student, folderLetterMap);
-            if (studentFolder) {
-                // Student folder found
-                Logger.log("Folder found for student: " + student.firstName + " " + student.lastName + " Folder ID: " + studentFolder);
-                student.folder = `https://drive.google.com/drive/u/0/folders/${studentFolder}`;
-                writeStudentToSheet(studentsWithFolderSheet, student, true);
+
+        // Search for the student's folder
+        for (const folder of allStudentFolders) {
+            // If it's found, save it and break the loop
+            if (detectStudentFolderMatch(student.firstName, student.lastName, student.prisonId, folder.name)) {
+                student.folder = "https://drive.google.com/drive/u/folders/" + folder.id;
+                Logger.log("Found folder for student: " + student.firstName + " " + student.lastName + " -> " + folder.name);
+                rowsForFoundSheet.push(row);
+                break;
             }
+            /**
             else {
-                // Student folder not found
-                Logger.log("No folder found for student: " + student.firstName + " " + student.lastName);
-                writeStudentToSheet(studentsWithoutFolderSheet, student, false);
-            }
+                Logger.log("No match in folder: " + folder.name);
+            }*/
+        }
+        if (!student.folder) {
+            Logger.log("No folder found for student: " + student.firstName + " " + student.lastName);
+            rowsForNotFoundSheet.push(row);
         }
 
     }
 
-
-}
-
-/**
- * Creates a map of letter folders to their corresponding folder IDs.
- * @param folders {array} The array of folder objects to process.
- * @returns {{}} A map where keys are letters and values are folder IDs.
- */
-function createFolderLetterMap(folders) {
-
-    // Create a map of folder names to folder objects for quick lookup
-    const folderMap = {};
-    const regex = /^[A-Z](-[A-Z]){0,2}$/; // Tests for letter folders
-    for (const folder of folders) {
-        const folderName = folder.getName().trim();
-
-        // If the folder name  is in the pattern of A, A-B, or A-B-C
-        if (regex.test(folderName)) {
-
-            // Store the ID of the folder under the letter key
-            // Since multiple folders may exist for a single letter, we store an array of IDs
-            const folderId = folder.getId();
-            const letters = folderName.split("-");
-            for (const letter of letters) {
-                if (folderMap[letter]) {
-                    folderMap[letter].push(folderId);
-                }
-                else {
-                    folderMap[letter] = [folderId];
-                }
-            }
-        }
+    // Batch write results //
+    if (rowsForFoundSheet.length > 0) {
+        studentsWithFolderSheet.getRange(studentsWithFolderSheet.getLastRow() + 1, 1, rowsForFoundSheet.length, rowsForFoundSheet[0].length)
+            .setValues(rowsForFoundSheet);
     }
-    return folderMap;
+    if (rowsForNotFoundSheet.length > 0) {
+        studentsWithoutFolderSheet.getRange(studentsWithoutFolderSheet.getLastRow() + 1, 1, rowsForNotFoundSheet.length, rowsForNotFoundSheet[0].length)
+            .setValues(rowsForNotFoundSheet);
+    }
+
 }
+
 
 /**
  * Creates a student object from a row of data.
@@ -136,68 +112,17 @@ function createFolderLetterMap(folders) {
  */
 function createStudentObject(row) {
     return {
-        firstName: row[0].toString().trim(),
-        lastName: row[1].toString().trim(),
-        state: row[2].toString().trim(),
-        prisonId: row[3].toString().trim(),
-        inactive: row[4].toString().trim(),
-        folder: row[5].toString().trim(),
-        released: row[6].toString().trim(),
-        contactId: row[7].toString().trim(),
-        createdDate: row[8],
-        lastModified: row[9]
+        firstName: row[firstNameColIndex].toString().trim(),
+        lastName: row[lastNameColIndex].toString().trim(),
+        state: row[stateColIndex].toString().trim(),
+        prisonId: row[prisonIdColIndex].toString().trim(),
+        inactive: row[inactiveColIndex].toString().trim(),
+        folder: row[folderColIndex].toString().trim(),
+        released: row[releasedColIndex].toString().trim(),
+        contactId: row[contactIdColIndex].toString().trim(),
+        createdDate: row[createdDateColIndex],
+        lastModified: row[lastModifiedColIndex]
     };
-}
-
-/**
- * Searches for a student's folder based on their last name initial and ID.
- * @param student {Object} The student object containing firstName, lastName, and prisonId.
- * @param folderLetterMap {Object} A map of letters to folder IDs.
- * @returns {undefined|string} The ID of the found folder, or undefined if not found.
- */
-function searchStudentFolders(student, folderLetterMap) {
-
-    const lastInitial = student.lastName.charAt(0).toUpperCase();
-    const studentId = student.prisonId;
-    const firstName = student.firstName;
-    const lastName = student.lastName;
-
-    if (folderLetterMap.hasOwnProperty(lastInitial)) {
-        const folders = folderLetterMap[lastInitial];
-
-        // Since multiple folders may exist for a single letter, we need to search each one
-        for (const folder of folders) {
-            // Search each subfolder for the student folder
-            const letterFolder = DriveApp.getFolderById(folder);
-            const foundFolderId = searchWithinLetterFolder(letterFolder, studentId, firstName, lastName);
-            if (foundFolderId) {
-                return foundFolderId; // Return the found folder ID
-            }
-        }
-        return undefined; // Not found in any of the letter folders
-    }
-    return undefined; // No folder for this initial
-}
-
-/**
- * Searches within a letter folder for a student folder by ID or name.
- * @param folder {Folder} The letter folder to search within.
- * @param studentId {string} The student ID to search for.
- * @param firstName {string} The student's first name.
- * @param lastName {string} The student's last name.
- * @returns {string} The ID of the found folder, or undefined if not found.
- */
-function searchWithinLetterFolder(folder, studentId, firstName, lastName) {
-    const subfolders = folder.getFolders();
-    while (subfolders.hasNext()) {
-        const subfolder = subfolders.next();
-        const folderName = subfolder.getName().trim();
-
-        if (detectStudentFolderMatch(firstName, lastName, studentId, folderName)) {
-            return subfolder.getId(); // Return the ID of the matching folder
-        }
-    }
-    return undefined; // No matching folder found
 }
 
 
@@ -309,7 +234,8 @@ function detectStudentFolderMatch(studentFirstName, studentLastName, studentId, 
         }
     }
 
-    Logger.log("Cleaned First Name: " + cleanedFirstName);
+    // Testing //
+    /**Logger.log("Cleaned First Name: " + cleanedFirstName);
     Logger.log("Cleaned Last Name: " + cleanedLastName);
     Logger.log("Cleaned Folder Name: " + cleanText(folderName));
 
@@ -317,7 +243,7 @@ function detectStudentFolderMatch(studentFirstName, studentLastName, studentId, 
     Logger.log("Main last name: " + primaryLastName);
     Logger.log("Extra name parts: " + JSON.stringify(extraNameParts));
     Logger.log("Student IDs: " + JSON.stringify(studentIds));
-    Logger.log("Score: " + score);
+    Logger.log("Score: " + score);*/
 
     // Determine if the score meets the threshold for a match
     const threshold = 14;
