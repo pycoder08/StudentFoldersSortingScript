@@ -1,27 +1,50 @@
 /**
  * Tayba Foundation - Student Folder Script
  * @fileoverview Script to sort students depending on whether they have a folder or not.
- * @author Muhammad Conn <muhammad.conn@icloud.com>, Tayba Foundation
+ * @author Muhammad Conn <muhammad.conn@icloud.com>
  *
  * # Usage
- *
+ * 1. Open the Google Sheet.
+ * 2. Click on the "Tayba" menu.
+ * 3. Select "Sort students for folders".
+ * 4. The script will process the "Students to search" sheet and populate the "Students with folder but no link in SF"
+ * and "Students without folder" sheets accordingly.
  */
+
+/*------------------------------------------------------------------
+  Initialize Menu
+-------------------------------------------------------------------*/
+
+/* Menu Function */
+function onOpen() {
+    let ui = SpreadsheetApp.getUi();
+    ui.createMenu('Tayba')
+        .addItem('Sort students for folders', 'menuItem1')
+        .addToUi();
+}
+
+/* Menu Item #1 Wrapper - Generate Exam */
+function menuItem1() {
+    sortStudents()
+}
+
+/*------------------------------------------------------------------
+    Constants
+-------------------------------------------------------------------*/
 
 // Column indices (0-based)
 const firstNameColIndex = 0; // Column A
 const lastNameColIndex = 1;  // Column B
-const stateColIndex = 2; // Column C
 const prisonIdColIndex = 3; // Column D
-const inactiveColIndex = 4; // Column E
 const folderColIndex = 5; // Column F
-const releasedColIndex = 6; // Column G
-const contactIdColIndex = 7// Column H
-const createdDateColIndex = 8; // Column I
-const lastModifiedColIndex = 9; // Column J
 
 /*------------------------------------------------------------------
   Main Function - Sort Students
 -------------------------------------------------------------------*/
+/**
+ * Sorts students into sheets based on whether they have a folder or not.
+ * Uses confidence scoring to match students to folders.
+ */
 function sortStudents() {
     // Initialize constants
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -71,28 +94,47 @@ function sortStudents() {
             continue;
         }
 
-        // Search for the student's folder
+        // Score all folders
+        let scoredMatches = [];
         for (const folder of allStudentFolders) {
-            // If it's found, save it and break the loop
-            if (detectStudentFolderMatch(student.firstName, student.lastName, student.prisonId, folder.name)) {
-                student.folder = "https://drive.google.com/drive/u/folders/" + folder.id;
-                Logger.log("Found folder for student: " + student.firstName + " " + student.lastName + " -> " + folder.name);
-                rowsForFoundSheet.push(row);
-                break;
+            const score = scoreFolder(student.firstName, student.lastName, student.prisonId, folder.name);
+            if (score > 0) {
+                scoredMatches.push({
+                    folder: folder,
+                    score: score
+                });
             }
-            /**
-            else {
-                Logger.log("No match in folder: " + folder.name);
-            }*/
-        }
-        if (!student.folder) {
-            Logger.log("No folder found for student: " + student.firstName + " " + student.lastName);
-            rowsForNotFoundSheet.push(row);
         }
 
+        // Analyze scores //
+
+        // If only one match was found, add a bonus point to its score
+        if (scoredMatches.length === 1) {
+            scoredMatches[0].score += 1;
+        }
+
+        // Sort matches by score in descending order
+        scoredMatches.sort((a, b) => b.score - a.score);
+
+        const threshold = 15; // Minimum score to consider a match valid
+        let bestMatch = scoredMatches.length >0 ? scoredMatches[0] : null; // Choose best match
+
+        if (bestMatch && bestMatch.score >= threshold) {
+            // --- FOLDER FOUND ---
+            Logger.log(`Best match found for ${student.firstName} with score ${bestMatch.score}`);
+            row[folderColIndex] = `https://drive.google.com/drive/u/0/folders/${bestMatch.folder.id}`;
+            rowsForFoundSheet.push(row);
+        } else {
+            // --- NO FOLDER FOUND ---
+            const bestScore = bestMatch ? bestMatch.score : 0;
+            Logger.log(`No confident match for ${student.firstName}. Best score: ${bestScore}`);
+            row[folderColIndex] = "No Folder Found";
+            rowsForNotFoundSheet.push(row);
+        }
     }
 
     // Batch write results //
+    Logger.log("Searches complete, writing to sheets...");
     if (rowsForFoundSheet.length > 0) {
         studentsWithFolderSheet.getRange(studentsWithFolderSheet.getLastRow() + 1, 1, rowsForFoundSheet.length, rowsForFoundSheet[0].length)
             .setValues(rowsForFoundSheet);
@@ -104,6 +146,9 @@ function sortStudents() {
 
 }
 
+/*------------------------------------------------------------------
+    Helper Functions
+-------------------------------------------------------------------*/
 
 /**
  * Creates a student object from a row of data.
@@ -114,39 +159,9 @@ function createStudentObject(row) {
     return {
         firstName: row[firstNameColIndex].toString().trim(),
         lastName: row[lastNameColIndex].toString().trim(),
-        state: row[stateColIndex].toString().trim(),
         prisonId: row[prisonIdColIndex].toString().trim(),
-        inactive: row[inactiveColIndex].toString().trim(),
-        folder: row[folderColIndex].toString().trim(),
-        released: row[releasedColIndex].toString().trim(),
-        contactId: row[contactIdColIndex].toString().trim(),
-        createdDate: row[createdDateColIndex],
-        lastModified: row[lastModifiedColIndex]
+        folder: row[folderColIndex].toString().trim()
     };
-}
-
-
-/**
- * Writes a student's data to the specified sheet.
- * @param sheet {Sheet} The sheet to write to.
- * @param student {Object} The student object containing their data.
- * @param hasFolder {boolean} Whether the student has a folder.
- */
-function writeStudentToSheet(sheet, student, hasFolder) {
-    const newRow = [
-        student.firstName,
-        student.lastName,
-        student.state,
-        student.prisonId,
-        student.inactive,
-        hasFolder ? student.folder : "No Folder",
-        student.released,
-        student.contactId,
-        student.createdDate,
-        student.lastModified
-    ]
-
-    sheet.appendRow(newRow);
 }
 
 /**
@@ -165,9 +180,9 @@ function cleanText(text) {
  * @param studentLastName last name of the student
  * @param studentId ID of the student
  * @param folderName name of the folder to check
- * @returns {boolean} true if the folder name matches the student, false otherwise
+ * @returns {int} score (0 or higher). Higher score means more confidence it's a match.
  */
-function detectStudentFolderMatch(studentFirstName, studentLastName, studentId, folderName) {
+function scoreFolder(studentFirstName, studentLastName, studentId, folderName) {
 
     // Step 1 - prepare student data //
 
@@ -246,11 +261,5 @@ function detectStudentFolderMatch(studentFirstName, studentLastName, studentId, 
     Logger.log("Score: " + score);*/
 
     // Determine if the score meets the threshold for a match
-    const threshold = 14;
-    return score >= threshold;
-}
-
-function testDetectStudentFolderMatch() {
-    const isMatch = detectStudentFolderMatch("John A.", "Doe-Smith", "01234/56789", "John Doe 1234");
-    Logger.log("Match result: " + isMatch); // Expected output: true
+    return score;
 }
